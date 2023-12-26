@@ -50,7 +50,7 @@ func (p *MethodsValidator) Validate(req *jrpc.Request) error {
 	if v, ok := p.Methods[req.Method]; ok {
 		err, info := v.Validate(req.Arguments)
 		for _, i := range info {
-			log.Printf("while validating rpc method \"%s\": %s", req.Method, i)
+			log.Printf("while validating rpc method \"%s\": %s\n", req.Method, i)
 		}
 
 		return err
@@ -101,7 +101,7 @@ func (a *MethodArgumentsValidator) Validate(args map[string]any) (err error, inf
 		} else if a.ErrorOnUnknown {
 			return &unknownArgument{name: key}, info
 		} else {
-			info = append(info, fmt.Sprintf("skipped unknown field \"%s\"\n", key))
+			info = append(info, fmt.Sprintf("skipped unknown field \"%s\"", key))
 			delete(args, key)
 		}
 	}
