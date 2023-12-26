@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -111,7 +112,7 @@ func rpcProxy(gw http.Handler, v transmission.RequestValidator, eh *http_error.H
 		r.Header.Del("Content-Length")
 		r.Body = io.NopCloser(bytes.NewReader(bs))
 
-		gw.ServeHTTP(w, r)
+		gw.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), rpcTag{}, req.Tag)))
 	}
 }
 

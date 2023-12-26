@@ -15,8 +15,8 @@ offers new methods or new arguments for old methods they will not be available u
 
 This app transfers all request headers to transmission, so all authentication details
 should work as if you spoke to the Transmission daemon directly. The app provides
-no additional security so it is the user's responsibility to protect their instance of Transmission
-and this app from an-authorized use.
+no additional security, so it is the user's responsibility to protect their instance of Transmission
+and this app from unauthorized use.
 
 ## Configuration
 
