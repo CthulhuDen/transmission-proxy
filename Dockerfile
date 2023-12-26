@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /transmission-proxy ./cmd
 
 FROM alpine
 
-COPY --from=build /gauth /
+COPY --from=build /transmission-proxy /
 
 EXPOSE 8080
 
