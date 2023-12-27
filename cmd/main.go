@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
+	"runtime"
 	"strings"
 
 	_ "github.com/joho/godotenv/autoload"
 
-	http_error "transmission-proxy/internal/http-error"
+	"transmission-proxy/internal/errHandler"
+	"transmission-proxy/internal/httpError"
 	"transmission-proxy/internal/jrpc"
 	"transmission-proxy/internal/transmission"
 )
@@ -41,12 +44,13 @@ var (
 	webPath        = getEnvOrDefault("WEB_PATH", "/transmission/web/")
 	rpcPath        = getEnvOrDefault("RPC_PATH", "/transmission/rpc")
 
+	logFormat = getEnvOrDefault("LOG_FORMAT", "json")
 	debugMode = getBoolEnv("DEBUG_MODE")
 )
 
 type rpcTag struct{}
 
-func proxy(gw *url.URL, eh *http_error.HttpErrHandler) http.HandlerFunc {
+func proxy(gw *url.URL, eh *httpError.HttpErrHandler) http.HandlerFunc {
 	c := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -68,7 +72,7 @@ func proxy(gw *url.URL, eh *http_error.HttpErrHandler) http.HandlerFunc {
 				tag = t.(int)
 			}
 
-			eh.Handle(w, tag, http.StatusBadGateway, "upstream error:", err)
+			eh.Handle(w, r.Context(), tag, http.StatusBadGateway, "upstream error", err)
 			return
 		}
 
@@ -84,27 +88,27 @@ func proxy(gw *url.URL, eh *http_error.HttpErrHandler) http.HandlerFunc {
 
 		_, err = io.Copy(w, resp.Body)
 		if err != nil {
-			log.Println("proxy: failed writing response: ", err)
+			slog.ErrorContext(r.Context(), "proxy: failed to write response", slog.Any("error", err))
 		}
 	}
 }
 
-func rpcProxy(gw http.Handler, v transmission.RequestValidator, eh *http_error.HttpErrHandler) http.HandlerFunc {
+func rpcProxy(gw http.Handler, v transmission.RequestValidator, eh *httpError.HttpErrHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := jrpc.FromRequest(r)
 		if err != nil {
-			eh.Handle(w, 0, http.StatusBadRequest, "unmarshal RPC request:", err)
+			eh.Handle(w, r.Context(), 0, http.StatusBadRequest, "cannot unmarshal RPC request", err)
 			return
 		}
 
 		if err = v.Validate(req); err != nil {
-			eh.Handle(w, req.Tag, http.StatusBadRequest, "invalid RPC request:", err)
+			eh.Handle(w, r.Context(), req.Tag, http.StatusBadRequest, "invalid RPC request", err)
 			return
 		}
 
 		bs, err := json.Marshal(req)
 		if err != nil {
-			eh.Handle(w, req.Tag, http.StatusInternalServerError, "serializing RPC request:", err)
+			eh.Handle(w, r.Context(), req.Tag, http.StatusInternalServerError, "cannot serialize RPC request", err)
 			return
 		}
 
@@ -132,41 +136,72 @@ func homePage(gw http.Handler) http.HandlerFunc {
 		w.WriteHeader(http.StatusNotFound)
 
 		if _, err := fmt.Fprintln(w, string(bs)); err != nil {
-			log.Println("while writing error body:", err)
+			slog.ErrorContext(r.Context(), "not_found: failed to write response", slog.Any("error", err))
 		}
 	}
 }
 
 func main() {
+	_, errHandler.RootPath, _, _ = runtime.Caller(0)
+	errHandler.RootPath = path.Dir(path.Dir(errHandler.RootPath)) + "/"
+	setupLogger()
+
 	if downloadPrefix == "" {
-		log.Fatalln("DOWNLOAD_PREFIX must be defined")
+		slog.Error("DOWNLOAD_PREFIX must be defined")
+		os.Exit(1)
 	}
 	if downloadPrefix[0] != '/' {
-		log.Fatalln("DOWNLOAD_PREFIX must begin with /")
+		slog.Error("DOWNLOAD_PREFIX must begin with /")
+		os.Exit(1)
 	}
 	if downloadPrefix[len(downloadPrefix)-1] != '/' {
-		log.Fatalln("DOWNLOAD_PREFIX must end with /")
+		slog.Error("DOWNLOAD_PREFIX must end with /")
+		os.Exit(1)
 	}
 
 	if upstreamHost == "" {
-		log.Fatalln("UPSTREAM_HOST must be defined")
+		slog.Error("UPSTREAM_HOST must be defined")
+		os.Exit(1)
 	}
 	gw, err := url.Parse(upstreamHost)
 	if err != nil {
-		log.Fatalln("failed to parse UPSTREAM_HOST:", err)
+		slog.Error("failed to parse UPSTREAM_HOST", slog.Any("error", err))
+		os.Exit(1)
 	}
 	if gw.Path != "" || gw.RawQuery != "" {
-		log.Fatalln("UPSTREAM_HOST must not define path or query")
+		slog.Error("UPSTREAM_HOST must not define path or query")
+		os.Exit(1)
 	}
 
 	v := transmission.DefaultMethodsValidator(downloadPrefix)
 
-	eh := http_error.NewHttpErrHandler(debugMode)
+	eh := httpError.NewHttpErrHandler(debugMode)
 
 	p := proxy(gw, eh)
 	http.Handle(webPath, p)
 	http.Handle(rpcPath, rpcProxy(p, v, eh))
 	http.Handle("/", homePage(p))
 
-	log.Fatalln(http.ListenAndServe(":8080", nil))
+	slog.Error("aborting", slog.Any("error", http.ListenAndServe(":8080", nil)))
+}
+
+func setupLogger() {
+	ho := slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}
+
+	var h slog.Handler
+	switch logFormat {
+	case "json":
+		h = slog.NewJSONHandler(os.Stderr, &ho)
+		break
+	case "text":
+		h = slog.NewTextHandler(os.Stderr, &ho)
+		break
+	default:
+		slog.Error("LOG_FORMAT must be json or text")
+		os.Exit(1)
+	}
+
+	slog.SetDefault(slog.New(&errHandler.ErrHandler{BaseHandler: h}))
 }

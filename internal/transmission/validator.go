@@ -2,9 +2,10 @@ package transmission
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
+	"transmission-proxy/internal/errHandler"
 	"transmission-proxy/internal/jrpc"
 )
 
@@ -14,20 +15,40 @@ var (
 	ErrTorrentForbiddenLocation = fmt.Errorf("forbidden location")
 )
 
-type IsUnknownArgumentError interface {
-	GetUnknownArgumentName() string
+type IsBadArgument interface {
+	GetBadArgument() string
 }
 
-type unknownArgument struct {
+type forbiddenField struct {
 	name string
 }
 
-func (u *unknownArgument) GetUnknownArgumentName() string {
-	return u.name
+func (f *forbiddenField) GetBadArgument() string {
+	return f.name
 }
 
-func (u *unknownArgument) Error() string {
-	return "unknown argument: " + u.name
+func (f *forbiddenField) Error() string {
+	return "forbidden field"
+}
+
+func (f *forbiddenField) ErrorAttrs() []slog.Attr {
+	return []slog.Attr{slog.String("field", f.name)}
+}
+
+type skippedField struct {
+	field string
+}
+
+func (s *skippedField) Error() string {
+	return "skipped field"
+}
+
+func (s *skippedField) GetBadArgument() string {
+	return s.field
+}
+
+func (s *skippedField) ErrorAttrs() []slog.Attr {
+	return []slog.Attr{slog.String("field", s.field)}
 }
 
 type RequestValidator interface {
@@ -35,7 +56,7 @@ type RequestValidator interface {
 }
 
 type ArgumentsValidator interface {
-	Validate(args map[string]any) (err error, info []string)
+	Validate(args map[string]any) (err error, info []any)
 }
 
 type ArgumentValidator interface {
@@ -50,10 +71,20 @@ func (p *MethodsValidator) Validate(req *jrpc.Request) error {
 	if v, ok := p.Methods[req.Method]; ok {
 		err, info := v.Validate(req.Arguments)
 		for _, i := range info {
-			log.Printf("while validating rpc method \"%s\": %s\n", req.Method, i)
+			if sf, ok := i.(skippedField); ok {
+				slog.WarnContext(req.Context, "skip field from RPC request",
+					slog.String("method", req.Method),
+					slog.String("field", sf.field))
+			} else if ba, ok := i.(IsBadArgument); ok {
+				slog.WarnContext(req.Context, fmt.Sprintf("%v", i),
+					slog.String("method", req.Method),
+					slog.String("field", ba.GetBadArgument()))
+			} else {
+				slog.WarnContext(req.Context, fmt.Sprintf("%v", i), slog.String("method", req.Method))
+			}
 		}
 
-		return err
+		return errHandler.WithAttributes(err, slog.String("method", req.Method))
 	}
 
 	return ErrUnknownMethod
@@ -92,16 +123,18 @@ type MethodArgumentsValidator struct {
 	ErrorOnUnknown bool
 }
 
-func (a *MethodArgumentsValidator) Validate(args map[string]any) (err error, info []string) {
+func (a *MethodArgumentsValidator) Validate(args map[string]any) (err error, info []any) {
 	for key, val := range args {
 		if v, ok := a.Arguments[key]; ok {
 			if err := v.Validate(key, val); err != nil {
-				return fmt.Errorf("argument %s: %w", key, err), info
+				return errHandler.WithAttributes(
+					fmt.Errorf("bad argument: %w", err), slog.String("field", key),
+				), info
 			}
 		} else if a.ErrorOnUnknown {
-			return &unknownArgument{name: key}, info
+			return &forbiddenField{name: key}, info
 		} else {
-			info = append(info, fmt.Sprintf("skipped unknown field \"%s\"", key))
+			info = append(info, skippedField{field: key})
 			delete(args, key)
 		}
 	}

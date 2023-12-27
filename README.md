@@ -27,3 +27,4 @@ All configuration is done via setting corresponding environment var:
 * `DEBUG_MODE`(optional, set to `yes`/`on`/`true` to return errors in response). Unless you are debugging
   this application and would like to see the error messages in HTTP responses, do not set this variable
   and instead only error IDs will be provided in responses while full error messages will be available in logs.
+* `LOG_FORMAT` (optional, `json`/`text`, default is `json`)
