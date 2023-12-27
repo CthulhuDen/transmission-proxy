@@ -58,11 +58,9 @@ func proxy(gw *url.URL, eh *httpError.HttpErrHandler) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		u := *gw
-		u.Path = r.URL.Path
+		u := gw.JoinPath(r.URL.Path)
 		u.RawQuery = r.URL.RawQuery
-
-		r.URL = &u
+		r.URL = u
 		r.RequestURI = ""
 
 		resp, err := c.Do(r)
@@ -183,6 +181,7 @@ func main() {
 	http.Handle("/", homePage(p))
 
 	slog.Error("aborting", slog.Any("error", http.ListenAndServe(":8080", nil)))
+	os.Exit(1)
 }
 
 func setupLogger() {
