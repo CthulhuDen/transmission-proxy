@@ -161,12 +161,15 @@ func main() {
 		slog.Error("UPSTREAM_HOST must be defined")
 		os.Exit(1)
 	}
+	if !strings.HasSuffix(upstreamHost, "/") {
+		upstreamHost += "/"
+	}
 	gw, err := url.Parse(upstreamHost)
 	if err != nil {
 		slog.Error("failed to parse UPSTREAM_HOST", slog.Any("error", err))
 		os.Exit(1)
 	}
-	if gw.Path != "" || gw.RawQuery != "" {
+	if gw.Path != "/" || gw.RawQuery != "" || gw.Fragment != "" {
 		slog.Error("UPSTREAM_HOST must not define path or query")
 		os.Exit(1)
 	}
