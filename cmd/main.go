@@ -16,9 +16,9 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 
-	"transmission-proxy/internal/errHandler"
-	"transmission-proxy/internal/httpError"
 	"transmission-proxy/internal/jrpc"
+	"transmission-proxy/internal/logger"
+	"transmission-proxy/internal/response"
 	"transmission-proxy/internal/transmission"
 )
 
@@ -44,13 +44,12 @@ var (
 	webPath        = getEnvOrDefault("WEB_PATH", "/transmission/web/")
 	rpcPath        = getEnvOrDefault("RPC_PATH", "/transmission/rpc")
 
-	logFormat = getEnvOrDefault("LOG_FORMAT", "json")
 	debugMode = getBoolEnv("DEBUG_MODE")
 )
 
 type rpcTag struct{}
 
-func proxy(gw *url.URL, eh *httpError.HttpErrHandler) http.HandlerFunc {
+func proxy(gw *url.URL, rr *response.Responder) http.HandlerFunc {
 	c := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -70,7 +69,7 @@ func proxy(gw *url.URL, eh *httpError.HttpErrHandler) http.HandlerFunc {
 				tag = t.(int)
 			}
 
-			eh.Handle(w, r.Context(), tag, http.StatusBadGateway, "upstream error", err)
+			rr.RespondAndLogCustom(w, r.Context(), fmt.Errorf("upstream error: %w", err), tag, slog.LevelError, http.StatusBadGateway)
 			return
 		}
 
@@ -86,27 +85,27 @@ func proxy(gw *url.URL, eh *httpError.HttpErrHandler) http.HandlerFunc {
 
 		_, err = io.Copy(w, resp.Body)
 		if err != nil {
-			slog.ErrorContext(r.Context(), "proxy: failed to write response", slog.Any("error", err))
+			slog.ErrorContext(r.Context(), "proxy: failed to write response: "+err.Error(), logger.IgnoredAttr(err))
 		}
 	}
 }
 
-func rpcProxy(gw http.Handler, v transmission.RequestValidator, eh *httpError.HttpErrHandler) http.HandlerFunc {
+func rpcProxy(gw http.Handler, v transmission.RequestValidator, rr *response.Responder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := jrpc.FromRequest(r)
 		if err != nil {
-			eh.Handle(w, r.Context(), 0, http.StatusBadRequest, "cannot unmarshal RPC request", err)
+			rr.RespondAndLogCustom(w, r.Context(), fmt.Errorf("failed to unmarshal RPC request: %w", err), 0, slog.LevelError, http.StatusBadRequest)
 			return
 		}
 
 		if err = v.Validate(req); err != nil {
-			eh.Handle(w, r.Context(), req.Tag, http.StatusBadRequest, "invalid RPC request", err)
+			rr.RespondAndLogCustom(w, r.Context(), fmt.Errorf("invalid RPC request: %w", err), req.Tag, slog.LevelError, http.StatusBadRequest)
 			return
 		}
 
 		bs, err := json.Marshal(req)
 		if err != nil {
-			eh.Handle(w, r.Context(), req.Tag, http.StatusInternalServerError, "cannot serialize RPC request", err)
+			rr.RespondAndLogError(w, r.Context(), fmt.Errorf("cannot serialize RPC request: %w", err), req.Tag)
 			return
 		}
 
@@ -134,15 +133,14 @@ func homePage(gw http.Handler) http.HandlerFunc {
 		w.WriteHeader(http.StatusNotFound)
 
 		if _, err := fmt.Fprintln(w, string(bs)); err != nil {
-			slog.ErrorContext(r.Context(), "not_found: failed to write response", slog.Any("error", err))
+			slog.ErrorContext(r.Context(), "not_found: failed to write response: "+err.Error(), logger.IgnoredAttr(err))
 		}
 	}
 }
 
 func main() {
-	_, errHandler.RootPath, _, _ = runtime.Caller(0)
-	errHandler.RootPath = path.Dir(path.Dir(errHandler.RootPath)) + "/"
-	setupLogger()
+	_, thisFile, _, _ := runtime.Caller(0)
+	logger.SetupSLog(slog.LevelDebug, path.Dir(path.Dir(thisFile)))
 
 	if downloadPrefix == "" {
 		slog.Error("DOWNLOAD_PREFIX must be defined")
@@ -166,7 +164,7 @@ func main() {
 	}
 	gw, err := url.Parse(upstreamHost)
 	if err != nil {
-		slog.Error("failed to parse UPSTREAM_HOST", slog.Any("error", err))
+		slog.Error("failed to parse UPSTREAM_HOST: "+err.Error(), logger.IgnoredAttr(err))
 		os.Exit(1)
 	}
 	if gw.Path != "/" || gw.RawQuery != "" || gw.Fragment != "" {
@@ -176,34 +174,15 @@ func main() {
 
 	v := transmission.DefaultMethodsValidator(downloadPrefix)
 
-	eh := httpError.NewHttpErrHandler(debugMode)
+	rr := &response.Responder{DebugMode: debugMode}
 
-	p := proxy(gw, eh)
+	p := proxy(gw, rr)
 	http.Handle(webPath, p)
-	http.Handle(rpcPath, rpcProxy(p, v, eh))
+	http.Handle(rpcPath, rpcProxy(p, v, rr))
 	http.Handle("/", homePage(p))
 
-	slog.Error("aborting", slog.Any("error", http.ListenAndServe(":8080", nil)))
+	err = http.ListenAndServe(":8080", nil)
+
+	slog.Error("aborting: "+err.Error(), logger.IgnoredAttr(err))
 	os.Exit(1)
-}
-
-func setupLogger() {
-	ho := slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}
-
-	var h slog.Handler
-	switch logFormat {
-	case "json":
-		h = slog.NewJSONHandler(os.Stderr, &ho)
-		break
-	case "text":
-		h = slog.NewTextHandler(os.Stderr, &ho)
-		break
-	default:
-		slog.Error("LOG_FORMAT must be json or text")
-		os.Exit(1)
-	}
-
-	slog.SetDefault(slog.New(&errHandler.ErrHandler{BaseHandler: h}))
 }

@@ -5,6 +5,8 @@ on:
     branches: ["**"]
 
 jobs:
+  check:
+    uses: ./.gitea/workflows/check.yaml
   build:
     runs-on: ubuntu-20.04 # cant run latest/22.04 on my old debian sadly
     steps:

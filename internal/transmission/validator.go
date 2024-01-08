@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"transmission-proxy/internal/errHandler"
 	"transmission-proxy/internal/jrpc"
+	"transmission-proxy/internal/logger"
 )
 
 var (
@@ -31,7 +31,7 @@ func (f *forbiddenField) Error() string {
 	return "forbidden field"
 }
 
-func (f *forbiddenField) ErrorAttrs() []slog.Attr {
+func (f *forbiddenField) GetLoggableAttrs() []slog.Attr {
 	return []slog.Attr{slog.String("field", f.name)}
 }
 
@@ -47,7 +47,7 @@ func (s *skippedField) GetBadArgument() string {
 	return s.field
 }
 
-func (s *skippedField) ErrorAttrs() []slog.Attr {
+func (s *skippedField) GetLoggableAttrs() []slog.Attr {
 	return []slog.Attr{slog.String("field", s.field)}
 }
 
@@ -84,10 +84,10 @@ func (p *MethodsValidator) Validate(req *jrpc.Request) error {
 			}
 		}
 
-		return errHandler.WithAttributes(err, slog.String("method", req.Method))
+		return logger.WithAttributes(err, slog.String("method", req.Method))
 	}
 
-	return ErrUnknownMethod
+	return logger.WithAttributes(ErrUnknownMethod, slog.String("method", req.Method))
 }
 
 func DefaultMethodsValidator(requiredLocPrefix string) *MethodsValidator {
@@ -127,7 +127,7 @@ func (a *MethodArgumentsValidator) Validate(args map[string]any) (err error, inf
 	for key, val := range args {
 		if v, ok := a.Arguments[key]; ok {
 			if err := v.Validate(key, val); err != nil {
-				return errHandler.WithAttributes(
+				return logger.WithAttributes(
 					fmt.Errorf("bad argument: %w", err), slog.String("field", key),
 				), info
 			}

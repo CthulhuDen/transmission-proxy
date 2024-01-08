@@ -5,8 +5,11 @@ on:
     tags: ["**"]
 
 jobs:
+  check:
+    uses: ./.gitea/workflows/check.yaml
   release:
     runs-on: ubuntu-20.04 # cant run latest/22.04 on my old debian sadly
+    needs: [check]
     steps:
       - name: Docker meta
         id: meta
